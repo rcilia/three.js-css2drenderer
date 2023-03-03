@@ -1,6 +1,6 @@
 {
-  "name": "three-css2drenderer",
-  "version": "0.150.0",
+  "name": "three-css2d",
+  "version": "0.150.0-css2d-0.0.1",
   "description": "Fork of three.js containing only its CSS2dRenderer and dependencies",
   "type": "module",
   "main": "./build/three.js",
@@ -10,11 +10,9 @@
       "import": "./build/three.module.js",
       "require": "./build/three.cjs"
     },
-    "./examples/fonts/*": "./examples/fonts/*",
     "./examples/jsm/*": "./examples/jsm/*",
     "./addons/*": "./examples/jsm/*",
-    "./src/*": "./src/*",
-    "./nodes": "./examples/jsm/nodes/Nodes.js"
+    "./src/*": "./src/*"
   },
   "repository": {
     "type": "git",
@@ -27,7 +25,6 @@
     "build/three.min.js",
     "build/three.module.js",
     "examples/jsm",
-    "examples/fonts",
     "LICENSE",
     "package.json",
     "README.md",
