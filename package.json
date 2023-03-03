@@ -1,6 +1,6 @@
 {
   "name": "three-css2d",
-  "version": "0.150.0-css2d-0.0.1",
+  "version": "0.150.0-css2d-0.0.2",
   "description": "Fork of three.js containing only its CSS2dRenderer and dependencies",
   "type": "module",
   "main": "./build/three.js",

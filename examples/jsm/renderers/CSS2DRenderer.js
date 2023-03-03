@@ -2,7 +2,7 @@ import {
 	Matrix4,
 	Object3D,
 	Vector3
-} from 'three-css2drenderer';
+} from 'three-css2d';
 
 class CSS2DObject extends Object3D {
 
