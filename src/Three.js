@@ -13,6 +13,13 @@ export { Euler } from './math/Euler.js';
 export { Vector4 } from './math/Vector4.js';
 export { Vector3 } from './math/Vector3.js';
 export { Quaternion } from './math/Quaternion.js';
+export { Cache } from './loaders/Cache.js';
+export { FileLoader } from './loaders/FileLoader.js';
+export { Loader } from './loaders/Loader.js';
+export { LoaderUtils } from './loaders/LoaderUtils.js';
+export { LoadingManager } from './loaders/LoadingManager.js';
+export { Group } from './objects/Group.js';
+export { PropertyBinding } from './animations/PropertyBinding.js';
 export * from './constants.js';
 
 if ( typeof __THREE_DEVTOOLS__ !== 'undefined' ) {

@@ -5552,6 +5552,1338 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 
 	}
 
+	const Cache = {
+
+		enabled: false,
+
+		files: {},
+
+		add: function ( key, file ) {
+
+			if ( this.enabled === false ) return;
+
+			// console.log( 'THREE.Cache', 'Adding key:', key );
+
+			this.files[ key ] = file;
+
+		},
+
+		get: function ( key ) {
+
+			if ( this.enabled === false ) return;
+
+			// console.log( 'THREE.Cache', 'Checking key:', key );
+
+			return this.files[ key ];
+
+		},
+
+		remove: function ( key ) {
+
+			delete this.files[ key ];
+
+		},
+
+		clear: function () {
+
+			this.files = {};
+
+		}
+
+	};
+
+	class LoadingManager {
+
+		constructor( onLoad, onProgress, onError ) {
+
+			const scope = this;
+
+			let isLoading = false;
+			let itemsLoaded = 0;
+			let itemsTotal = 0;
+			let urlModifier = undefined;
+			const handlers = [];
+
+			// Refer to #5689 for the reason why we don't set .onStart
+			// in the constructor
+
+			this.onStart = undefined;
+			this.onLoad = onLoad;
+			this.onProgress = onProgress;
+			this.onError = onError;
+
+			this.itemStart = function ( url ) {
+
+				itemsTotal ++;
+
+				if ( isLoading === false ) {
+
+					if ( scope.onStart !== undefined ) {
+
+						scope.onStart( url, itemsLoaded, itemsTotal );
+
+					}
+
+				}
+
+				isLoading = true;
+
+			};
+
+			this.itemEnd = function ( url ) {
+
+				itemsLoaded ++;
+
+				if ( scope.onProgress !== undefined ) {
+
+					scope.onProgress( url, itemsLoaded, itemsTotal );
+
+				}
+
+				if ( itemsLoaded === itemsTotal ) {
+
+					isLoading = false;
+
+					if ( scope.onLoad !== undefined ) {
+
+						scope.onLoad();
+
+					}
+
+				}
+
+			};
+
+			this.itemError = function ( url ) {
+
+				if ( scope.onError !== undefined ) {
+
+					scope.onError( url );
+
+				}
+
+			};
+
+			this.resolveURL = function ( url ) {
+
+				if ( urlModifier ) {
+
+					return urlModifier( url );
+
+				}
+
+				return url;
+
+			};
+
+			this.setURLModifier = function ( transform ) {
+
+				urlModifier = transform;
+
+				return this;
+
+			};
+
+			this.addHandler = function ( regex, loader ) {
+
+				handlers.push( regex, loader );
+
+				return this;
+
+			};
+
+			this.removeHandler = function ( regex ) {
+
+				const index = handlers.indexOf( regex );
+
+				if ( index !== - 1 ) {
+
+					handlers.splice( index, 2 );
+
+				}
+
+				return this;
+
+			};
+
+			this.getHandler = function ( file ) {
+
+				for ( let i = 0, l = handlers.length; i < l; i += 2 ) {
+
+					const regex = handlers[ i ];
+					const loader = handlers[ i + 1 ];
+
+					if ( regex.global ) regex.lastIndex = 0; // see #17920
+
+					if ( regex.test( file ) ) {
+
+						return loader;
+
+					}
+
+				}
+
+				return null;
+
+			};
+
+		}
+
+	}
+
+	const DefaultLoadingManager = /*@__PURE__*/ new LoadingManager();
+
+	class Loader {
+
+		constructor( manager ) {
+
+			this.manager = ( manager !== undefined ) ? manager : DefaultLoadingManager;
+
+			this.crossOrigin = 'anonymous';
+			this.withCredentials = false;
+			this.path = '';
+			this.resourcePath = '';
+			this.requestHeader = {};
+
+		}
+
+		load( /* url, onLoad, onProgress, onError */ ) {}
+
+		loadAsync( url, onProgress ) {
+
+			const scope = this;
+
+			return new Promise( function ( resolve, reject ) {
+
+				scope.load( url, resolve, onProgress, reject );
+
+			} );
+
+		}
+
+		parse( /* data */ ) {}
+
+		setCrossOrigin( crossOrigin ) {
+
+			this.crossOrigin = crossOrigin;
+			return this;
+
+		}
+
+		setWithCredentials( value ) {
+
+			this.withCredentials = value;
+			return this;
+
+		}
+
+		setPath( path ) {
+
+			this.path = path;
+			return this;
+
+		}
+
+		setResourcePath( resourcePath ) {
+
+			this.resourcePath = resourcePath;
+			return this;
+
+		}
+
+		setRequestHeader( requestHeader ) {
+
+			this.requestHeader = requestHeader;
+			return this;
+
+		}
+
+	}
+
+	const loading = {};
+
+	class HttpError extends Error {
+
+		constructor( message, response ) {
+
+			super( message );
+			this.response = response;
+
+		}
+
+	}
+
+	class FileLoader extends Loader {
+
+		constructor( manager ) {
+
+			super( manager );
+
+		}
+
+		load( url, onLoad, onProgress, onError ) {
+
+			if ( url === undefined ) url = '';
+
+			if ( this.path !== undefined ) url = this.path + url;
+
+			url = this.manager.resolveURL( url );
+
+			const cached = Cache.get( url );
+
+			if ( cached !== undefined ) {
+
+				this.manager.itemStart( url );
+
+				setTimeout( () => {
+
+					if ( onLoad ) onLoad( cached );
+
+					this.manager.itemEnd( url );
+
+				}, 0 );
+
+				return cached;
+
+			}
+
+			// Check if request is duplicate
+
+			if ( loading[ url ] !== undefined ) {
+
+				loading[ url ].push( {
+
+					onLoad: onLoad,
+					onProgress: onProgress,
+					onError: onError
+
+				} );
+
+				return;
+
+			}
+
+			// Initialise array for duplicate requests
+			loading[ url ] = [];
+
+			loading[ url ].push( {
+				onLoad: onLoad,
+				onProgress: onProgress,
+				onError: onError,
+			} );
+
+			// create request
+			const req = new Request( url, {
+				headers: new Headers( this.requestHeader ),
+				credentials: this.withCredentials ? 'include' : 'same-origin',
+				// An abort controller could be added within a future PR
+			} );
+
+			// record states ( avoid data race )
+			const mimeType = this.mimeType;
+			const responseType = this.responseType;
+
+			// start the fetch
+			fetch( req )
+				.then( response => {
+
+					if ( response.status === 200 || response.status === 0 ) {
+
+						// Some browsers return HTTP Status 0 when using non-http protocol
+						// e.g. 'file://' or 'data://'. Handle as success.
+
+						if ( response.status === 0 ) {
+
+							console.warn( 'THREE.FileLoader: HTTP Status 0 received.' );
+
+						}
+
+						// Workaround: Checking if response.body === undefined for Alipay browser #23548
+
+						if ( typeof ReadableStream === 'undefined' || response.body === undefined || response.body.getReader === undefined ) {
+
+							return response;
+
+						}
+
+						const callbacks = loading[ url ];
+						const reader = response.body.getReader();
+
+						// Nginx needs X-File-Size check
+						// https://serverfault.com/questions/482875/why-does-nginx-remove-content-length-header-for-chunked-content
+						const contentLength = response.headers.get( 'Content-Length' ) || response.headers.get( 'X-File-Size' );
+						const total = contentLength ? parseInt( contentLength ) : 0;
+						const lengthComputable = total !== 0;
+						let loaded = 0;
+
+						// periodically read data into the new stream tracking while download progress
+						const stream = new ReadableStream( {
+							start( controller ) {
+
+								readData();
+
+								function readData() {
+
+									reader.read().then( ( { done, value } ) => {
+
+										if ( done ) {
+
+											controller.close();
+
+										} else {
+
+											loaded += value.byteLength;
+
+											const event = new ProgressEvent( 'progress', { lengthComputable, loaded, total } );
+											for ( let i = 0, il = callbacks.length; i < il; i ++ ) {
+
+												const callback = callbacks[ i ];
+												if ( callback.onProgress ) callback.onProgress( event );
+
+											}
+
+											controller.enqueue( value );
+											readData();
+
+										}
+
+									} );
+
+								}
+
+							}
+
+						} );
+
+						return new Response( stream );
+
+					} else {
+
+						throw new HttpError( `fetch for "${response.url}" responded with ${response.status}: ${response.statusText}`, response );
+
+					}
+
+				} )
+				.then( response => {
+
+					switch ( responseType ) {
+
+						case 'arraybuffer':
+
+							return response.arrayBuffer();
+
+						case 'blob':
+
+							return response.blob();
+
+						case 'document':
+
+							return response.text()
+								.then( text => {
+
+									const parser = new DOMParser();
+									return parser.parseFromString( text, mimeType );
+
+								} );
+
+						case 'json':
+
+							return response.json();
+
+						default:
+
+							if ( mimeType === undefined ) {
+
+								return response.text();
+
+							} else {
+
+								// sniff encoding
+								const re = /charset="?([^;"\s]*)"?/i;
+								const exec = re.exec( mimeType );
+								const label = exec && exec[ 1 ] ? exec[ 1 ].toLowerCase() : undefined;
+								const decoder = new TextDecoder( label );
+								return response.arrayBuffer().then( ab => decoder.decode( ab ) );
+
+							}
+
+					}
+
+				} )
+				.then( data => {
+
+					// Add to cache only on HTTP success, so that we do not cache
+					// error response bodies as proper responses to requests.
+					Cache.add( url, data );
+
+					const callbacks = loading[ url ];
+					delete loading[ url ];
+
+					for ( let i = 0, il = callbacks.length; i < il; i ++ ) {
+
+						const callback = callbacks[ i ];
+						if ( callback.onLoad ) callback.onLoad( data );
+
+					}
+
+				} )
+				.catch( err => {
+
+					// Abort errors and other errors are handled the same
+
+					const callbacks = loading[ url ];
+
+					if ( callbacks === undefined ) {
+
+						// When onLoad was called and url was deleted in `loading`
+						this.manager.itemError( url );
+						throw err;
+
+					}
+
+					delete loading[ url ];
+
+					for ( let i = 0, il = callbacks.length; i < il; i ++ ) {
+
+						const callback = callbacks[ i ];
+						if ( callback.onError ) callback.onError( err );
+
+					}
+
+					this.manager.itemError( url );
+
+				} )
+				.finally( () => {
+
+					this.manager.itemEnd( url );
+
+				} );
+
+			this.manager.itemStart( url );
+
+		}
+
+		setResponseType( value ) {
+
+			this.responseType = value;
+			return this;
+
+		}
+
+		setMimeType( value ) {
+
+			this.mimeType = value;
+			return this;
+
+		}
+
+	}
+
+	class LoaderUtils {
+
+		static decodeText( array ) {
+
+			if ( typeof TextDecoder !== 'undefined' ) {
+
+				return new TextDecoder().decode( array );
+
+			}
+
+			// Avoid the String.fromCharCode.apply(null, array) shortcut, which
+			// throws a "maximum call stack size exceeded" error for large arrays.
+
+			let s = '';
+
+			for ( let i = 0, il = array.length; i < il; i ++ ) {
+
+				// Implicitly assumes little-endian.
+				s += String.fromCharCode( array[ i ] );
+
+			}
+
+			try {
+
+				// merges multi-byte utf-8 characters.
+
+				return decodeURIComponent( escape( s ) );
+
+			} catch ( e ) { // see #16358
+
+				return s;
+
+			}
+
+		}
+
+		static extractUrlBase( url ) {
+
+			const index = url.lastIndexOf( '/' );
+
+			if ( index === - 1 ) return './';
+
+			return url.slice( 0, index + 1 );
+
+		}
+
+		static resolveURL( url, path ) {
+
+			// Invalid URL
+			if ( typeof url !== 'string' || url === '' ) return '';
+
+			// Host Relative URL
+			if ( /^https?:\/\//i.test( path ) && /^\//.test( url ) ) {
+
+				path = path.replace( /(^https?:\/\/[^\/]+).*/i, '$1' );
+
+			}
+
+			// Absolute URL http://,https://,//
+			if ( /^(https?:)?\/\//i.test( url ) ) return url;
+
+			// Data URI
+			if ( /^data:.*,.*$/i.test( url ) ) return url;
+
+			// Blob URL
+			if ( /^blob:.*$/i.test( url ) ) return url;
+
+			// Relative URL
+			return path + url;
+
+		}
+
+	}
+
+	class Group extends Object3D {
+
+		constructor() {
+
+			super();
+
+			this.isGroup = true;
+
+			this.type = 'Group';
+
+		}
+
+	}
+
+	// Characters [].:/ are reserved for track binding syntax.
+	const _RESERVED_CHARS_RE = '\\[\\]\\.:\\/';
+	const _reservedRe = new RegExp( '[' + _RESERVED_CHARS_RE + ']', 'g' );
+
+	// Attempts to allow node names from any language. ES5's `\w` regexp matches
+	// only latin characters, and the unicode \p{L} is not yet supported. So
+	// instead, we exclude reserved characters and match everything else.
+	const _wordChar = '[^' + _RESERVED_CHARS_RE + ']';
+	const _wordCharOrDot = '[^' + _RESERVED_CHARS_RE.replace( '\\.', '' ) + ']';
+
+	// Parent directories, delimited by '/' or ':'. Currently unused, but must
+	// be matched to parse the rest of the track name.
+	const _directoryRe = /*@__PURE__*/ /((?:WC+[\/:])*)/.source.replace( 'WC', _wordChar );
+
+	// Target node. May contain word characters (a-zA-Z0-9_) and '.' or '-'.
+	const _nodeRe = /*@__PURE__*/ /(WCOD+)?/.source.replace( 'WCOD', _wordCharOrDot );
+
+	// Object on target node, and accessor. May not contain reserved
+	// characters. Accessor may contain any character except closing bracket.
+	const _objectRe = /*@__PURE__*/ /(?:\.(WC+)(?:\[(.+)\])?)?/.source.replace( 'WC', _wordChar );
+
+	// Property and accessor. May not contain reserved characters. Accessor may
+	// contain any non-bracket characters.
+	const _propertyRe = /*@__PURE__*/ /\.(WC+)(?:\[(.+)\])?/.source.replace( 'WC', _wordChar );
+
+	const _trackRe = new RegExp( ''
+		+ '^'
+		+ _directoryRe
+		+ _nodeRe
+		+ _objectRe
+		+ _propertyRe
+		+ '$'
+	);
+
+	const _supportedObjectNames = [ 'material', 'materials', 'bones', 'map' ];
+
+	class Composite {
+
+		constructor( targetGroup, path, optionalParsedPath ) {
+
+			const parsedPath = optionalParsedPath || PropertyBinding.parseTrackName( path );
+
+			this._targetGroup = targetGroup;
+			this._bindings = targetGroup.subscribe_( path, parsedPath );
+
+		}
+
+		getValue( array, offset ) {
+
+			this.bind(); // bind all binding
+
+			const firstValidIndex = this._targetGroup.nCachedObjects_,
+				binding = this._bindings[ firstValidIndex ];
+
+			// and only call .getValue on the first
+			if ( binding !== undefined ) binding.getValue( array, offset );
+
+		}
+
+		setValue( array, offset ) {
+
+			const bindings = this._bindings;
+
+			for ( let i = this._targetGroup.nCachedObjects_, n = bindings.length; i !== n; ++ i ) {
+
+				bindings[ i ].setValue( array, offset );
+
+			}
+
+		}
+
+		bind() {
+
+			const bindings = this._bindings;
+
+			for ( let i = this._targetGroup.nCachedObjects_, n = bindings.length; i !== n; ++ i ) {
+
+				bindings[ i ].bind();
+
+			}
+
+		}
+
+		unbind() {
+
+			const bindings = this._bindings;
+
+			for ( let i = this._targetGroup.nCachedObjects_, n = bindings.length; i !== n; ++ i ) {
+
+				bindings[ i ].unbind();
+
+			}
+
+		}
+
+	}
+
+	// Note: This class uses a State pattern on a per-method basis:
+	// 'bind' sets 'this.getValue' / 'setValue' and shadows the
+	// prototype version of these methods with one that represents
+	// the bound state. When the property is not found, the methods
+	// become no-ops.
+	class PropertyBinding {
+
+		constructor( rootNode, path, parsedPath ) {
+
+			this.path = path;
+			this.parsedPath = parsedPath || PropertyBinding.parseTrackName( path );
+
+			this.node = PropertyBinding.findNode( rootNode, this.parsedPath.nodeName );
+
+			this.rootNode = rootNode;
+
+			// initial state of these methods that calls 'bind'
+			this.getValue = this._getValue_unbound;
+			this.setValue = this._setValue_unbound;
+
+		}
+
+
+		static create( root, path, parsedPath ) {
+
+			if ( ! ( root && root.isAnimationObjectGroup ) ) {
+
+				return new PropertyBinding( root, path, parsedPath );
+
+			} else {
+
+				return new PropertyBinding.Composite( root, path, parsedPath );
+
+			}
+
+		}
+
+		/**
+		 * Replaces spaces with underscores and removes unsupported characters from
+		 * node names, to ensure compatibility with parseTrackName().
+		 *
+		 * @param {string} name Node name to be sanitized.
+		 * @return {string}
+		 */
+		static sanitizeNodeName( name ) {
+
+			return name.replace( /\s/g, '_' ).replace( _reservedRe, '' );
+
+		}
+
+		static parseTrackName( trackName ) {
+
+			const matches = _trackRe.exec( trackName );
+
+			if ( matches === null ) {
+
+				throw new Error( 'PropertyBinding: Cannot parse trackName: ' + trackName );
+
+			}
+
+			const results = {
+				// directoryName: matches[ 1 ], // (tschw) currently unused
+				nodeName: matches[ 2 ],
+				objectName: matches[ 3 ],
+				objectIndex: matches[ 4 ],
+				propertyName: matches[ 5 ], // required
+				propertyIndex: matches[ 6 ]
+			};
+
+			const lastDot = results.nodeName && results.nodeName.lastIndexOf( '.' );
+
+			if ( lastDot !== undefined && lastDot !== - 1 ) {
+
+				const objectName = results.nodeName.substring( lastDot + 1 );
+
+				// Object names must be checked against an allowlist. Otherwise, there
+				// is no way to parse 'foo.bar.baz': 'baz' must be a property, but
+				// 'bar' could be the objectName, or part of a nodeName (which can
+				// include '.' characters).
+				if ( _supportedObjectNames.indexOf( objectName ) !== - 1 ) {
+
+					results.nodeName = results.nodeName.substring( 0, lastDot );
+					results.objectName = objectName;
+
+				}
+
+			}
+
+			if ( results.propertyName === null || results.propertyName.length === 0 ) {
+
+				throw new Error( 'PropertyBinding: can not parse propertyName from trackName: ' + trackName );
+
+			}
+
+			return results;
+
+		}
+
+		static findNode( root, nodeName ) {
+
+			if ( nodeName === undefined || nodeName === '' || nodeName === '.' || nodeName === - 1 || nodeName === root.name || nodeName === root.uuid ) {
+
+				return root;
+
+			}
+
+			// search into skeleton bones.
+			if ( root.skeleton ) {
+
+				const bone = root.skeleton.getBoneByName( nodeName );
+
+				if ( bone !== undefined ) {
+
+					return bone;
+
+				}
+
+			}
+
+			// search into node subtree.
+			if ( root.children ) {
+
+				const searchNodeSubtree = function ( children ) {
+
+					for ( let i = 0; i < children.length; i ++ ) {
+
+						const childNode = children[ i ];
+
+						if ( childNode.name === nodeName || childNode.uuid === nodeName ) {
+
+							return childNode;
+
+						}
+
+						const result = searchNodeSubtree( childNode.children );
+
+						if ( result ) return result;
+
+					}
+
+					return null;
+
+				};
+
+				const subTreeNode = searchNodeSubtree( root.children );
+
+				if ( subTreeNode ) {
+
+					return subTreeNode;
+
+				}
+
+			}
+
+			return null;
+
+		}
+
+		// these are used to "bind" a nonexistent property
+		_getValue_unavailable() {}
+		_setValue_unavailable() {}
+
+		// Getters
+
+		_getValue_direct( buffer, offset ) {
+
+			buffer[ offset ] = this.targetObject[ this.propertyName ];
+
+		}
+
+		_getValue_array( buffer, offset ) {
+
+			const source = this.resolvedProperty;
+
+			for ( let i = 0, n = source.length; i !== n; ++ i ) {
+
+				buffer[ offset ++ ] = source[ i ];
+
+			}
+
+		}
+
+		_getValue_arrayElement( buffer, offset ) {
+
+			buffer[ offset ] = this.resolvedProperty[ this.propertyIndex ];
+
+		}
+
+		_getValue_toArray( buffer, offset ) {
+
+			this.resolvedProperty.toArray( buffer, offset );
+
+		}
+
+		// Direct
+
+		_setValue_direct( buffer, offset ) {
+
+			this.targetObject[ this.propertyName ] = buffer[ offset ];
+
+		}
+
+		_setValue_direct_setNeedsUpdate( buffer, offset ) {
+
+			this.targetObject[ this.propertyName ] = buffer[ offset ];
+			this.targetObject.needsUpdate = true;
+
+		}
+
+		_setValue_direct_setMatrixWorldNeedsUpdate( buffer, offset ) {
+
+			this.targetObject[ this.propertyName ] = buffer[ offset ];
+			this.targetObject.matrixWorldNeedsUpdate = true;
+
+		}
+
+		// EntireArray
+
+		_setValue_array( buffer, offset ) {
+
+			const dest = this.resolvedProperty;
+
+			for ( let i = 0, n = dest.length; i !== n; ++ i ) {
+
+				dest[ i ] = buffer[ offset ++ ];
+
+			}
+
+		}
+
+		_setValue_array_setNeedsUpdate( buffer, offset ) {
+
+			const dest = this.resolvedProperty;
+
+			for ( let i = 0, n = dest.length; i !== n; ++ i ) {
+
+				dest[ i ] = buffer[ offset ++ ];
+
+			}
+
+			this.targetObject.needsUpdate = true;
+
+		}
+
+		_setValue_array_setMatrixWorldNeedsUpdate( buffer, offset ) {
+
+			const dest = this.resolvedProperty;
+
+			for ( let i = 0, n = dest.length; i !== n; ++ i ) {
+
+				dest[ i ] = buffer[ offset ++ ];
+
+			}
+
+			this.targetObject.matrixWorldNeedsUpdate = true;
+
+		}
+
+		// ArrayElement
+
+		_setValue_arrayElement( buffer, offset ) {
+
+			this.resolvedProperty[ this.propertyIndex ] = buffer[ offset ];
+
+		}
+
+		_setValue_arrayElement_setNeedsUpdate( buffer, offset ) {
+
+			this.resolvedProperty[ this.propertyIndex ] = buffer[ offset ];
+			this.targetObject.needsUpdate = true;
+
+		}
+
+		_setValue_arrayElement_setMatrixWorldNeedsUpdate( buffer, offset ) {
+
+			this.resolvedProperty[ this.propertyIndex ] = buffer[ offset ];
+			this.targetObject.matrixWorldNeedsUpdate = true;
+
+		}
+
+		// HasToFromArray
+
+		_setValue_fromArray( buffer, offset ) {
+
+			this.resolvedProperty.fromArray( buffer, offset );
+
+		}
+
+		_setValue_fromArray_setNeedsUpdate( buffer, offset ) {
+
+			this.resolvedProperty.fromArray( buffer, offset );
+			this.targetObject.needsUpdate = true;
+
+		}
+
+		_setValue_fromArray_setMatrixWorldNeedsUpdate( buffer, offset ) {
+
+			this.resolvedProperty.fromArray( buffer, offset );
+			this.targetObject.matrixWorldNeedsUpdate = true;
+
+		}
+
+		_getValue_unbound( targetArray, offset ) {
+
+			this.bind();
+			this.getValue( targetArray, offset );
+
+		}
+
+		_setValue_unbound( sourceArray, offset ) {
+
+			this.bind();
+			this.setValue( sourceArray, offset );
+
+		}
+
+		// create getter / setter pair for a property in the scene graph
+		bind() {
+
+			let targetObject = this.node;
+			const parsedPath = this.parsedPath;
+
+			const objectName = parsedPath.objectName;
+			const propertyName = parsedPath.propertyName;
+			let propertyIndex = parsedPath.propertyIndex;
+
+			if ( ! targetObject ) {
+
+				targetObject = PropertyBinding.findNode( this.rootNode, parsedPath.nodeName );
+
+				this.node = targetObject;
+
+			}
+
+			// set fail state so we can just 'return' on error
+			this.getValue = this._getValue_unavailable;
+			this.setValue = this._setValue_unavailable;
+
+			// ensure there is a value node
+			if ( ! targetObject ) {
+
+				console.error( 'THREE.PropertyBinding: Trying to update node for track: ' + this.path + ' but it wasn\'t found.' );
+				return;
+
+			}
+
+			if ( objectName ) {
+
+				let objectIndex = parsedPath.objectIndex;
+
+				// special cases were we need to reach deeper into the hierarchy to get the face materials....
+				switch ( objectName ) {
+
+					case 'materials':
+
+						if ( ! targetObject.material ) {
+
+							console.error( 'THREE.PropertyBinding: Can not bind to material as node does not have a material.', this );
+							return;
+
+						}
+
+						if ( ! targetObject.material.materials ) {
+
+							console.error( 'THREE.PropertyBinding: Can not bind to material.materials as node.material does not have a materials array.', this );
+							return;
+
+						}
+
+						targetObject = targetObject.material.materials;
+
+						break;
+
+					case 'bones':
+
+						if ( ! targetObject.skeleton ) {
+
+							console.error( 'THREE.PropertyBinding: Can not bind to bones as node does not have a skeleton.', this );
+							return;
+
+						}
+
+						// potential future optimization: skip this if propertyIndex is already an integer
+						// and convert the integer string to a true integer.
+
+						targetObject = targetObject.skeleton.bones;
+
+						// support resolving morphTarget names into indices.
+						for ( let i = 0; i < targetObject.length; i ++ ) {
+
+							if ( targetObject[ i ].name === objectIndex ) {
+
+								objectIndex = i;
+								break;
+
+							}
+
+						}
+
+						break;
+
+					case 'map':
+
+						if ( 'map' in targetObject ) {
+
+							targetObject = targetObject.map;
+							break;
+
+						}
+
+						if ( ! targetObject.material ) {
+
+							console.error( 'THREE.PropertyBinding: Can not bind to material as node does not have a material.', this );
+							return;
+
+						}
+
+						if ( ! targetObject.material.map ) {
+
+							console.error( 'THREE.PropertyBinding: Can not bind to material.map as node.material does not have a map.', this );
+							return;
+
+						}
+
+						targetObject = targetObject.material.map;
+						break;
+
+					default:
+
+						if ( targetObject[ objectName ] === undefined ) {
+
+							console.error( 'THREE.PropertyBinding: Can not bind to objectName of node undefined.', this );
+							return;
+
+						}
+
+						targetObject = targetObject[ objectName ];
+
+				}
+
+
+				if ( objectIndex !== undefined ) {
+
+					if ( targetObject[ objectIndex ] === undefined ) {
+
+						console.error( 'THREE.PropertyBinding: Trying to bind to objectIndex of objectName, but is undefined.', this, targetObject );
+						return;
+
+					}
+
+					targetObject = targetObject[ objectIndex ];
+
+				}
+
+			}
+
+			// resolve property
+			const nodeProperty = targetObject[ propertyName ];
+
+			if ( nodeProperty === undefined ) {
+
+				const nodeName = parsedPath.nodeName;
+
+				console.error( 'THREE.PropertyBinding: Trying to update property for track: ' + nodeName +
+					'.' + propertyName + ' but it wasn\'t found.', targetObject );
+				return;
+
+			}
+
+			// determine versioning scheme
+			let versioning = this.Versioning.None;
+
+			this.targetObject = targetObject;
+
+			if ( targetObject.needsUpdate !== undefined ) { // material
+
+				versioning = this.Versioning.NeedsUpdate;
+
+			} else if ( targetObject.matrixWorldNeedsUpdate !== undefined ) { // node transform
+
+				versioning = this.Versioning.MatrixWorldNeedsUpdate;
+
+			}
+
+			// determine how the property gets bound
+			let bindingType = this.BindingType.Direct;
+
+			if ( propertyIndex !== undefined ) {
+
+				// access a sub element of the property array (only primitives are supported right now)
+
+				if ( propertyName === 'morphTargetInfluences' ) {
+
+					// potential optimization, skip this if propertyIndex is already an integer, and convert the integer string to a true integer.
+
+					// support resolving morphTarget names into indices.
+					if ( ! targetObject.geometry ) {
+
+						console.error( 'THREE.PropertyBinding: Can not bind to morphTargetInfluences because node does not have a geometry.', this );
+						return;
+
+					}
+
+					if ( ! targetObject.geometry.morphAttributes ) {
+
+						console.error( 'THREE.PropertyBinding: Can not bind to morphTargetInfluences because node does not have a geometry.morphAttributes.', this );
+						return;
+
+					}
+
+					if ( targetObject.morphTargetDictionary[ propertyIndex ] !== undefined ) {
+
+						propertyIndex = targetObject.morphTargetDictionary[ propertyIndex ];
+
+					}
+
+				}
+
+				bindingType = this.BindingType.ArrayElement;
+
+				this.resolvedProperty = nodeProperty;
+				this.propertyIndex = propertyIndex;
+
+			} else if ( nodeProperty.fromArray !== undefined && nodeProperty.toArray !== undefined ) {
+
+				// must use copy for Object3D.Euler/Quaternion
+
+				bindingType = this.BindingType.HasFromToArray;
+
+				this.resolvedProperty = nodeProperty;
+
+			} else if ( Array.isArray( nodeProperty ) ) {
+
+				bindingType = this.BindingType.EntireArray;
+
+				this.resolvedProperty = nodeProperty;
+
+			} else {
+
+				this.propertyName = propertyName;
+
+			}
+
+			// select getter / setter
+			this.getValue = this.GetterByBindingType[ bindingType ];
+			this.setValue = this.SetterByBindingTypeAndVersioning[ bindingType ][ versioning ];
+
+		}
+
+		unbind() {
+
+			this.node = null;
+
+			// back to the prototype version of getValue / setValue
+			// note: avoiding to mutate the shape of 'this' via 'delete'
+			this.getValue = this._getValue_unbound;
+			this.setValue = this._setValue_unbound;
+
+		}
+
+	}
+
+	PropertyBinding.Composite = Composite;
+
+	PropertyBinding.prototype.BindingType = {
+		Direct: 0,
+		EntireArray: 1,
+		ArrayElement: 2,
+		HasFromToArray: 3
+	};
+
+	PropertyBinding.prototype.Versioning = {
+		None: 0,
+		NeedsUpdate: 1,
+		MatrixWorldNeedsUpdate: 2
+	};
+
+	PropertyBinding.prototype.GetterByBindingType = [
+
+		PropertyBinding.prototype._getValue_direct,
+		PropertyBinding.prototype._getValue_array,
+		PropertyBinding.prototype._getValue_arrayElement,
+		PropertyBinding.prototype._getValue_toArray,
+
+	];
+
+	PropertyBinding.prototype.SetterByBindingTypeAndVersioning = [
+
+		[
+			// Direct
+			PropertyBinding.prototype._setValue_direct,
+			PropertyBinding.prototype._setValue_direct_setNeedsUpdate,
+			PropertyBinding.prototype._setValue_direct_setMatrixWorldNeedsUpdate,
+
+		], [
+
+			// EntireArray
+
+			PropertyBinding.prototype._setValue_array,
+			PropertyBinding.prototype._setValue_array_setNeedsUpdate,
+			PropertyBinding.prototype._setValue_array_setMatrixWorldNeedsUpdate,
+
+		], [
+
+			// ArrayElement
+			PropertyBinding.prototype._setValue_arrayElement,
+			PropertyBinding.prototype._setValue_arrayElement_setNeedsUpdate,
+			PropertyBinding.prototype._setValue_arrayElement_setMatrixWorldNeedsUpdate,
+
+		], [
+
+			// HasToFromArray
+			PropertyBinding.prototype._setValue_fromArray,
+			PropertyBinding.prototype._setValue_fromArray_setNeedsUpdate,
+			PropertyBinding.prototype._setValue_fromArray_setMatrixWorldNeedsUpdate,
+
+		]
+
+	];
+
 	if ( typeof __THREE_DEVTOOLS__ !== 'undefined' ) {
 
 		__THREE_DEVTOOLS__.dispatchEvent( new CustomEvent( 'register', { detail: {
@@ -5586,6 +6918,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 	exports.BasicDepthPacking = BasicDepthPacking;
 	exports.BasicShadowMap = BasicShadowMap;
 	exports.ByteType = ByteType;
+	exports.Cache = Cache;
 	exports.Camera = Camera;
 	exports.CineonToneMapping = CineonToneMapping;
 	exports.ClampToEdgeWrapping = ClampToEdgeWrapping;
@@ -5615,6 +6948,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 	exports.EquirectangularRefractionMapping = EquirectangularRefractionMapping;
 	exports.Euler = Euler;
 	exports.EventDispatcher = EventDispatcher;
+	exports.FileLoader = FileLoader;
 	exports.FloatType = FloatType;
 	exports.FrontSide = FrontSide;
 	exports.GLSL1 = GLSL1;
@@ -5623,6 +6957,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 	exports.GreaterEqualDepth = GreaterEqualDepth;
 	exports.GreaterEqualStencilFunc = GreaterEqualStencilFunc;
 	exports.GreaterStencilFunc = GreaterStencilFunc;
+	exports.Group = Group;
 	exports.HalfFloatType = HalfFloatType;
 	exports.IncrementStencilOp = IncrementStencilOp;
 	exports.IncrementWrapStencilOp = IncrementWrapStencilOp;
@@ -5645,6 +6980,9 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 	exports.LinearMipmapNearestFilter = LinearMipmapNearestFilter;
 	exports.LinearSRGBColorSpace = LinearSRGBColorSpace;
 	exports.LinearToneMapping = LinearToneMapping;
+	exports.Loader = Loader;
+	exports.LoaderUtils = LoaderUtils;
+	exports.LoadingManager = LoadingManager;
 	exports.LoopOnce = LoopOnce;
 	exports.LoopPingPong = LoopPingPong;
 	exports.LoopRepeat = LoopRepeat;
@@ -5684,6 +7022,7 @@ console.warn( 'Scripts "build/three.js" and "build/three.min.js" are deprecated 
 	exports.PCFShadowMap = PCFShadowMap;
 	exports.PCFSoftShadowMap = PCFSoftShadowMap;
 	exports.PerspectiveCamera = PerspectiveCamera;
+	exports.PropertyBinding = PropertyBinding;
 	exports.Quaternion = Quaternion;
 	exports.RED_GREEN_RGTC2_Format = RED_GREEN_RGTC2_Format;
 	exports.RED_RGTC1_Format = RED_RGTC1_Format;
