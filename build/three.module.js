@@ -5545,6 +5545,621 @@ class Vector4 {
 
 }
 
+const Cache = {
+
+	enabled: false,
+
+	files: {},
+
+	add: function ( key, file ) {
+
+		if ( this.enabled === false ) return;
+
+		// console.log( 'THREE.Cache', 'Adding key:', key );
+
+		this.files[ key ] = file;
+
+	},
+
+	get: function ( key ) {
+
+		if ( this.enabled === false ) return;
+
+		// console.log( 'THREE.Cache', 'Checking key:', key );
+
+		return this.files[ key ];
+
+	},
+
+	remove: function ( key ) {
+
+		delete this.files[ key ];
+
+	},
+
+	clear: function () {
+
+		this.files = {};
+
+	}
+
+};
+
+class LoadingManager {
+
+	constructor( onLoad, onProgress, onError ) {
+
+		const scope = this;
+
+		let isLoading = false;
+		let itemsLoaded = 0;
+		let itemsTotal = 0;
+		let urlModifier = undefined;
+		const handlers = [];
+
+		// Refer to #5689 for the reason why we don't set .onStart
+		// in the constructor
+
+		this.onStart = undefined;
+		this.onLoad = onLoad;
+		this.onProgress = onProgress;
+		this.onError = onError;
+
+		this.itemStart = function ( url ) {
+
+			itemsTotal ++;
+
+			if ( isLoading === false ) {
+
+				if ( scope.onStart !== undefined ) {
+
+					scope.onStart( url, itemsLoaded, itemsTotal );
+
+				}
+
+			}
+
+			isLoading = true;
+
+		};
+
+		this.itemEnd = function ( url ) {
+
+			itemsLoaded ++;
+
+			if ( scope.onProgress !== undefined ) {
+
+				scope.onProgress( url, itemsLoaded, itemsTotal );
+
+			}
+
+			if ( itemsLoaded === itemsTotal ) {
+
+				isLoading = false;
+
+				if ( scope.onLoad !== undefined ) {
+
+					scope.onLoad();
+
+				}
+
+			}
+
+		};
+
+		this.itemError = function ( url ) {
+
+			if ( scope.onError !== undefined ) {
+
+				scope.onError( url );
+
+			}
+
+		};
+
+		this.resolveURL = function ( url ) {
+
+			if ( urlModifier ) {
+
+				return urlModifier( url );
+
+			}
+
+			return url;
+
+		};
+
+		this.setURLModifier = function ( transform ) {
+
+			urlModifier = transform;
+
+			return this;
+
+		};
+
+		this.addHandler = function ( regex, loader ) {
+
+			handlers.push( regex, loader );
+
+			return this;
+
+		};
+
+		this.removeHandler = function ( regex ) {
+
+			const index = handlers.indexOf( regex );
+
+			if ( index !== - 1 ) {
+
+				handlers.splice( index, 2 );
+
+			}
+
+			return this;
+
+		};
+
+		this.getHandler = function ( file ) {
+
+			for ( let i = 0, l = handlers.length; i < l; i += 2 ) {
+
+				const regex = handlers[ i ];
+				const loader = handlers[ i + 1 ];
+
+				if ( regex.global ) regex.lastIndex = 0; // see #17920
+
+				if ( regex.test( file ) ) {
+
+					return loader;
+
+				}
+
+			}
+
+			return null;
+
+		};
+
+	}
+
+}
+
+const DefaultLoadingManager = /*@__PURE__*/ new LoadingManager();
+
+class Loader {
+
+	constructor( manager ) {
+
+		this.manager = ( manager !== undefined ) ? manager : DefaultLoadingManager;
+
+		this.crossOrigin = 'anonymous';
+		this.withCredentials = false;
+		this.path = '';
+		this.resourcePath = '';
+		this.requestHeader = {};
+
+	}
+
+	load( /* url, onLoad, onProgress, onError */ ) {}
+
+	loadAsync( url, onProgress ) {
+
+		const scope = this;
+
+		return new Promise( function ( resolve, reject ) {
+
+			scope.load( url, resolve, onProgress, reject );
+
+		} );
+
+	}
+
+	parse( /* data */ ) {}
+
+	setCrossOrigin( crossOrigin ) {
+
+		this.crossOrigin = crossOrigin;
+		return this;
+
+	}
+
+	setWithCredentials( value ) {
+
+		this.withCredentials = value;
+		return this;
+
+	}
+
+	setPath( path ) {
+
+		this.path = path;
+		return this;
+
+	}
+
+	setResourcePath( resourcePath ) {
+
+		this.resourcePath = resourcePath;
+		return this;
+
+	}
+
+	setRequestHeader( requestHeader ) {
+
+		this.requestHeader = requestHeader;
+		return this;
+
+	}
+
+}
+
+const loading = {};
+
+class HttpError extends Error {
+
+	constructor( message, response ) {
+
+		super( message );
+		this.response = response;
+
+	}
+
+}
+
+class FileLoader extends Loader {
+
+	constructor( manager ) {
+
+		super( manager );
+
+	}
+
+	load( url, onLoad, onProgress, onError ) {
+
+		if ( url === undefined ) url = '';
+
+		if ( this.path !== undefined ) url = this.path + url;
+
+		url = this.manager.resolveURL( url );
+
+		const cached = Cache.get( url );
+
+		if ( cached !== undefined ) {
+
+			this.manager.itemStart( url );
+
+			setTimeout( () => {
+
+				if ( onLoad ) onLoad( cached );
+
+				this.manager.itemEnd( url );
+
+			}, 0 );
+
+			return cached;
+
+		}
+
+		// Check if request is duplicate
+
+		if ( loading[ url ] !== undefined ) {
+
+			loading[ url ].push( {
+
+				onLoad: onLoad,
+				onProgress: onProgress,
+				onError: onError
+
+			} );
+
+			return;
+
+		}
+
+		// Initialise array for duplicate requests
+		loading[ url ] = [];
+
+		loading[ url ].push( {
+			onLoad: onLoad,
+			onProgress: onProgress,
+			onError: onError,
+		} );
+
+		// create request
+		const req = new Request( url, {
+			headers: new Headers( this.requestHeader ),
+			credentials: this.withCredentials ? 'include' : 'same-origin',
+			// An abort controller could be added within a future PR
+		} );
+
+		// record states ( avoid data race )
+		const mimeType = this.mimeType;
+		const responseType = this.responseType;
+
+		// start the fetch
+		fetch( req )
+			.then( response => {
+
+				if ( response.status === 200 || response.status === 0 ) {
+
+					// Some browsers return HTTP Status 0 when using non-http protocol
+					// e.g. 'file://' or 'data://'. Handle as success.
+
+					if ( response.status === 0 ) {
+
+						console.warn( 'THREE.FileLoader: HTTP Status 0 received.' );
+
+					}
+
+					// Workaround: Checking if response.body === undefined for Alipay browser #23548
+
+					if ( typeof ReadableStream === 'undefined' || response.body === undefined || response.body.getReader === undefined ) {
+
+						return response;
+
+					}
+
+					const callbacks = loading[ url ];
+					const reader = response.body.getReader();
+
+					// Nginx needs X-File-Size check
+					// https://serverfault.com/questions/482875/why-does-nginx-remove-content-length-header-for-chunked-content
+					const contentLength = response.headers.get( 'Content-Length' ) || response.headers.get( 'X-File-Size' );
+					const total = contentLength ? parseInt( contentLength ) : 0;
+					const lengthComputable = total !== 0;
+					let loaded = 0;
+
+					// periodically read data into the new stream tracking while download progress
+					const stream = new ReadableStream( {
+						start( controller ) {
+
+							readData();
+
+							function readData() {
+
+								reader.read().then( ( { done, value } ) => {
+
+									if ( done ) {
+
+										controller.close();
+
+									} else {
+
+										loaded += value.byteLength;
+
+										const event = new ProgressEvent( 'progress', { lengthComputable, loaded, total } );
+										for ( let i = 0, il = callbacks.length; i < il; i ++ ) {
+
+											const callback = callbacks[ i ];
+											if ( callback.onProgress ) callback.onProgress( event );
+
+										}
+
+										controller.enqueue( value );
+										readData();
+
+									}
+
+								} );
+
+							}
+
+						}
+
+					} );
+
+					return new Response( stream );
+
+				} else {
+
+					throw new HttpError( `fetch for "${response.url}" responded with ${response.status}: ${response.statusText}`, response );
+
+				}
+
+			} )
+			.then( response => {
+
+				switch ( responseType ) {
+
+					case 'arraybuffer':
+
+						return response.arrayBuffer();
+
+					case 'blob':
+
+						return response.blob();
+
+					case 'document':
+
+						return response.text()
+							.then( text => {
+
+								const parser = new DOMParser();
+								return parser.parseFromString( text, mimeType );
+
+							} );
+
+					case 'json':
+
+						return response.json();
+
+					default:
+
+						if ( mimeType === undefined ) {
+
+							return response.text();
+
+						} else {
+
+							// sniff encoding
+							const re = /charset="?([^;"\s]*)"?/i;
+							const exec = re.exec( mimeType );
+							const label = exec && exec[ 1 ] ? exec[ 1 ].toLowerCase() : undefined;
+							const decoder = new TextDecoder( label );
+							return response.arrayBuffer().then( ab => decoder.decode( ab ) );
+
+						}
+
+				}
+
+			} )
+			.then( data => {
+
+				// Add to cache only on HTTP success, so that we do not cache
+				// error response bodies as proper responses to requests.
+				Cache.add( url, data );
+
+				const callbacks = loading[ url ];
+				delete loading[ url ];
+
+				for ( let i = 0, il = callbacks.length; i < il; i ++ ) {
+
+					const callback = callbacks[ i ];
+					if ( callback.onLoad ) callback.onLoad( data );
+
+				}
+
+			} )
+			.catch( err => {
+
+				// Abort errors and other errors are handled the same
+
+				const callbacks = loading[ url ];
+
+				if ( callbacks === undefined ) {
+
+					// When onLoad was called and url was deleted in `loading`
+					this.manager.itemError( url );
+					throw err;
+
+				}
+
+				delete loading[ url ];
+
+				for ( let i = 0, il = callbacks.length; i < il; i ++ ) {
+
+					const callback = callbacks[ i ];
+					if ( callback.onError ) callback.onError( err );
+
+				}
+
+				this.manager.itemError( url );
+
+			} )
+			.finally( () => {
+
+				this.manager.itemEnd( url );
+
+			} );
+
+		this.manager.itemStart( url );
+
+	}
+
+	setResponseType( value ) {
+
+		this.responseType = value;
+		return this;
+
+	}
+
+	setMimeType( value ) {
+
+		this.mimeType = value;
+		return this;
+
+	}
+
+}
+
+class LoaderUtils {
+
+	static decodeText( array ) {
+
+		if ( typeof TextDecoder !== 'undefined' ) {
+
+			return new TextDecoder().decode( array );
+
+		}
+
+		// Avoid the String.fromCharCode.apply(null, array) shortcut, which
+		// throws a "maximum call stack size exceeded" error for large arrays.
+
+		let s = '';
+
+		for ( let i = 0, il = array.length; i < il; i ++ ) {
+
+			// Implicitly assumes little-endian.
+			s += String.fromCharCode( array[ i ] );
+
+		}
+
+		try {
+
+			// merges multi-byte utf-8 characters.
+
+			return decodeURIComponent( escape( s ) );
+
+		} catch ( e ) { // see #16358
+
+			return s;
+
+		}
+
+	}
+
+	static extractUrlBase( url ) {
+
+		const index = url.lastIndexOf( '/' );
+
+		if ( index === - 1 ) return './';
+
+		return url.slice( 0, index + 1 );
+
+	}
+
+	static resolveURL( url, path ) {
+
+		// Invalid URL
+		if ( typeof url !== 'string' || url === '' ) return '';
+
+		// Host Relative URL
+		if ( /^https?:\/\//i.test( path ) && /^\//.test( url ) ) {
+
+			path = path.replace( /(^https?:\/\/[^\/]+).*/i, '$1' );
+
+		}
+
+		// Absolute URL http://,https://,//
+		if ( /^(https?:)?\/\//i.test( url ) ) return url;
+
+		// Data URI
+		if ( /^data:.*,.*$/i.test( url ) ) return url;
+
+		// Blob URL
+		if ( /^blob:.*$/i.test( url ) ) return url;
+
+		// Relative URL
+		return path + url;
+
+	}
+
+}
+
+class Group extends Object3D {
+
+	constructor() {
+
+		super();
+
+		this.isGroup = true;
+
+		this.type = 'Group';
+
+	}
+
+}
+
 if ( typeof __THREE_DEVTOOLS__ !== 'undefined' ) {
 
 	__THREE_DEVTOOLS__.dispatchEvent( new CustomEvent( 'register', { detail: {
@@ -5567,4 +6182,4 @@ if ( typeof window !== 'undefined' ) {
 
 }
 
-export { ACESFilmicToneMapping, AddEquation, AddOperation, AdditiveAnimationBlendMode, AdditiveBlending, AlphaFormat, AlwaysDepth, AlwaysStencilFunc, BackSide, BasicDepthPacking, BasicShadowMap, ByteType, Camera, CineonToneMapping, ClampToEdgeWrapping, CubeReflectionMapping, CubeRefractionMapping, CubeUVReflectionMapping, CullFaceBack, CullFaceFront, CullFaceFrontBack, CullFaceNone, CustomBlending, CustomToneMapping, DecrementStencilOp, DecrementWrapStencilOp, DepthFormat, DepthStencilFormat, DisplayP3ColorSpace, DoubleSide, DstAlphaFactor, DstColorFactor, DynamicCopyUsage, DynamicDrawUsage, DynamicReadUsage, EqualDepth, EqualStencilFunc, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Euler, EventDispatcher, FloatType, FrontSide, GLSL1, GLSL3, GreaterDepth, GreaterEqualDepth, GreaterEqualStencilFunc, GreaterStencilFunc, HalfFloatType, IncrementStencilOp, IncrementWrapStencilOp, IntType, InterpolateDiscrete, InterpolateLinear, InterpolateSmooth, InvertStencilOp, KeepStencilOp, Layers, LessDepth, LessEqualDepth, LessEqualStencilFunc, LessStencilFunc, LinearEncoding, LinearFilter, LinearMipMapLinearFilter, LinearMipMapNearestFilter, LinearMipmapLinearFilter, LinearMipmapNearestFilter, LinearSRGBColorSpace, LinearToneMapping, LoopOnce, LoopPingPong, LoopRepeat, LuminanceAlphaFormat, LuminanceFormat, MOUSE, MathUtils, Matrix3, Matrix4, MaxEquation, MinEquation, MirroredRepeatWrapping, MixOperation, MultiplyBlending, MultiplyOperation, NearestFilter, NearestMipMapLinearFilter, NearestMipMapNearestFilter, NearestMipmapLinearFilter, NearestMipmapNearestFilter, NeverDepth, NeverStencilFunc, NoBlending, NoColorSpace, NoToneMapping, NormalAnimationBlendMode, NormalBlending, NotEqualDepth, NotEqualStencilFunc, Object3D, ObjectSpaceNormalMap, OneFactor, OneMinusDstAlphaFactor, OneMinusDstColorFactor, OneMinusSrcAlphaFactor, OneMinusSrcColorFactor, PCFShadowMap, PCFSoftShadowMap, PerspectiveCamera, Quaternion, RED_GREEN_RGTC2_Format, RED_RGTC1_Format, REVISION, RGBADepthPacking, RGBAFormat, RGBAIntegerFormat, RGBA_ASTC_10x10_Format, RGBA_ASTC_10x5_Format, RGBA_ASTC_10x6_Format, RGBA_ASTC_10x8_Format, RGBA_ASTC_12x10_Format, RGBA_ASTC_12x12_Format, RGBA_ASTC_4x4_Format, RGBA_ASTC_5x4_Format, RGBA_ASTC_5x5_Format, RGBA_ASTC_6x5_Format, RGBA_ASTC_6x6_Format, RGBA_ASTC_8x5_Format, RGBA_ASTC_8x6_Format, RGBA_ASTC_8x8_Format, RGBA_BPTC_Format, RGBA_ETC2_EAC_Format, RGBA_PVRTC_2BPPV1_Format, RGBA_PVRTC_4BPPV1_Format, RGBA_S3TC_DXT1_Format, RGBA_S3TC_DXT3_Format, RGBA_S3TC_DXT5_Format, RGB_ETC1_Format, RGB_ETC2_Format, RGB_PVRTC_2BPPV1_Format, RGB_PVRTC_4BPPV1_Format, RGB_S3TC_DXT1_Format, RGFormat, RGIntegerFormat, RedFormat, RedIntegerFormat, ReinhardToneMapping, RepeatWrapping, ReplaceStencilOp, ReverseSubtractEquation, SIGNED_RED_GREEN_RGTC2_Format, SIGNED_RED_RGTC1_Format, SRGBColorSpace, Scene, ShortType, SrcAlphaFactor, SrcAlphaSaturateFactor, SrcColorFactor, StaticCopyUsage, StaticDrawUsage, StaticReadUsage, StreamCopyUsage, StreamDrawUsage, StreamReadUsage, SubtractEquation, SubtractiveBlending, TOUCH, TangentSpaceNormalMap, TriangleFanDrawMode, TriangleStripDrawMode, TrianglesDrawMode, TwoPassDoubleSide, UVMapping, UnsignedByteType, UnsignedInt248Type, UnsignedIntType, UnsignedShort4444Type, UnsignedShort5551Type, UnsignedShortType, VSMShadowMap, Vector3, Vector4, WrapAroundEnding, ZeroCurvatureEnding, ZeroFactor, ZeroSlopeEnding, ZeroStencilOp, _SRGBAFormat, sRGBEncoding };
+export { ACESFilmicToneMapping, AddEquation, AddOperation, AdditiveAnimationBlendMode, AdditiveBlending, AlphaFormat, AlwaysDepth, AlwaysStencilFunc, BackSide, BasicDepthPacking, BasicShadowMap, ByteType, Cache, Camera, CineonToneMapping, ClampToEdgeWrapping, CubeReflectionMapping, CubeRefractionMapping, CubeUVReflectionMapping, CullFaceBack, CullFaceFront, CullFaceFrontBack, CullFaceNone, CustomBlending, CustomToneMapping, DecrementStencilOp, DecrementWrapStencilOp, DepthFormat, DepthStencilFormat, DisplayP3ColorSpace, DoubleSide, DstAlphaFactor, DstColorFactor, DynamicCopyUsage, DynamicDrawUsage, DynamicReadUsage, EqualDepth, EqualStencilFunc, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Euler, EventDispatcher, FileLoader, FloatType, FrontSide, GLSL1, GLSL3, GreaterDepth, GreaterEqualDepth, GreaterEqualStencilFunc, GreaterStencilFunc, Group, HalfFloatType, IncrementStencilOp, IncrementWrapStencilOp, IntType, InterpolateDiscrete, InterpolateLinear, InterpolateSmooth, InvertStencilOp, KeepStencilOp, Layers, LessDepth, LessEqualDepth, LessEqualStencilFunc, LessStencilFunc, LinearEncoding, LinearFilter, LinearMipMapLinearFilter, LinearMipMapNearestFilter, LinearMipmapLinearFilter, LinearMipmapNearestFilter, LinearSRGBColorSpace, LinearToneMapping, Loader, LoaderUtils, LoadingManager, LoopOnce, LoopPingPong, LoopRepeat, LuminanceAlphaFormat, LuminanceFormat, MOUSE, MathUtils, Matrix3, Matrix4, MaxEquation, MinEquation, MirroredRepeatWrapping, MixOperation, MultiplyBlending, MultiplyOperation, NearestFilter, NearestMipMapLinearFilter, NearestMipMapNearestFilter, NearestMipmapLinearFilter, NearestMipmapNearestFilter, NeverDepth, NeverStencilFunc, NoBlending, NoColorSpace, NoToneMapping, NormalAnimationBlendMode, NormalBlending, NotEqualDepth, NotEqualStencilFunc, Object3D, ObjectSpaceNormalMap, OneFactor, OneMinusDstAlphaFactor, OneMinusDstColorFactor, OneMinusSrcAlphaFactor, OneMinusSrcColorFactor, PCFShadowMap, PCFSoftShadowMap, PerspectiveCamera, Quaternion, RED_GREEN_RGTC2_Format, RED_RGTC1_Format, REVISION, RGBADepthPacking, RGBAFormat, RGBAIntegerFormat, RGBA_ASTC_10x10_Format, RGBA_ASTC_10x5_Format, RGBA_ASTC_10x6_Format, RGBA_ASTC_10x8_Format, RGBA_ASTC_12x10_Format, RGBA_ASTC_12x12_Format, RGBA_ASTC_4x4_Format, RGBA_ASTC_5x4_Format, RGBA_ASTC_5x5_Format, RGBA_ASTC_6x5_Format, RGBA_ASTC_6x6_Format, RGBA_ASTC_8x5_Format, RGBA_ASTC_8x6_Format, RGBA_ASTC_8x8_Format, RGBA_BPTC_Format, RGBA_ETC2_EAC_Format, RGBA_PVRTC_2BPPV1_Format, RGBA_PVRTC_4BPPV1_Format, RGBA_S3TC_DXT1_Format, RGBA_S3TC_DXT3_Format, RGBA_S3TC_DXT5_Format, RGB_ETC1_Format, RGB_ETC2_Format, RGB_PVRTC_2BPPV1_Format, RGB_PVRTC_4BPPV1_Format, RGB_S3TC_DXT1_Format, RGFormat, RGIntegerFormat, RedFormat, RedIntegerFormat, ReinhardToneMapping, RepeatWrapping, ReplaceStencilOp, ReverseSubtractEquation, SIGNED_RED_GREEN_RGTC2_Format, SIGNED_RED_RGTC1_Format, SRGBColorSpace, Scene, ShortType, SrcAlphaFactor, SrcAlphaSaturateFactor, SrcColorFactor, StaticCopyUsage, StaticDrawUsage, StaticReadUsage, StreamCopyUsage, StreamDrawUsage, StreamReadUsage, SubtractEquation, SubtractiveBlending, TOUCH, TangentSpaceNormalMap, TriangleFanDrawMode, TriangleStripDrawMode, TrianglesDrawMode, TwoPassDoubleSide, UVMapping, UnsignedByteType, UnsignedInt248Type, UnsignedIntType, UnsignedShort4444Type, UnsignedShort5551Type, UnsignedShortType, VSMShadowMap, Vector3, Vector4, WrapAroundEnding, ZeroCurvatureEnding, ZeroFactor, ZeroSlopeEnding, ZeroStencilOp, _SRGBAFormat, sRGBEncoding };
