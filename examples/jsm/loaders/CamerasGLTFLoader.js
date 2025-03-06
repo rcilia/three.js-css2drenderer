@@ -7,6 +7,7 @@ import {
 	Matrix4,
 	Object3D,
 	PerspectiveCamera,
+	PropertyBinding,
 } from 'three-css2d';
 
 class CamerasGLTFLoader extends Loader {

@@ -19,6 +19,7 @@ export { Loader } from './loaders/Loader.js';
 export { LoaderUtils } from './loaders/LoaderUtils.js';
 export { LoadingManager } from './loaders/LoadingManager.js';
 export { Group } from './objects/Group.js';
+export { PropertyBinding } from './animations/PropertyBinding.js';
 export * from './constants.js';
 
 if ( typeof __THREE_DEVTOOLS__ !== 'undefined' ) {
