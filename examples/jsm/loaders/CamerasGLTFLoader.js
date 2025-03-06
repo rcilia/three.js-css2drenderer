@@ -404,35 +404,6 @@ class GLTFParser {
 
 		// Track node names, to ensure no duplicates
 		this.nodeNamesUsed = {};
-
-		// Use an ImageBitmapLoader if imageBitmaps are supported. Moves much of the
-		// expensive work of uploading a texture to the GPU off the main thread.
-
-		let isSafari = false;
-		let isFirefox = false;
-		let firefoxVersion = - 1;
-
-		if (typeof navigator !== 'undefined') {
-
-			isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) === true;
-			isFirefox = navigator.userAgent.indexOf('Firefox') > - 1;
-			firefoxVersion = isFirefox ? navigator.userAgent.match(/Firefox\/([0-9]+)\./)[1] : - 1;
-
-		}
-
-		if (typeof createImageBitmap === 'undefined' || isSafari || (isFirefox && firefoxVersion < 98)) {
-
-			this.textureLoader = new TextureLoader(this.options.manager);
-
-		} else {
-
-			this.textureLoader = new ImageBitmapLoader(this.options.manager);
-
-		}
-
-		this.textureLoader.setCrossOrigin(this.options.crossOrigin);
-		this.textureLoader.setRequestHeader(this.options.requestHeader);
-
 		this.fileLoader = new FileLoader(this.options.manager);
 		this.fileLoader.setResponseType('arraybuffer');
 
@@ -1060,16 +1031,6 @@ class GLTFParser {
 			const reduceAssociations = (node) => {
 
 				const reducedAssociations = new Map();
-
-				for (const [key, value] of parser.associations) {
-
-					if (key instanceof Material || key instanceof Texture) {
-
-						reducedAssociations.set(key, value);
-
-					}
-
-				}
 
 				node.traverse((node) => {
 
